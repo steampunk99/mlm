@@ -1,52 +1,81 @@
 require('dotenv').config();
+const { PrismaClient } = require('@prisma/client');
 
-module.exports = {
-  development: {
-    username: process.env.DB_USER || 'root',
-    password: process.env.DB_PASS || 'password',
-    database: process.env.DB_NAME || 'zilla',
-    host: process.env.DB_HOST || 'localhost',
-    dialect: 'mysql',
-    logging: console.log
-  },
-  test: {
-    username: process.env.DB_USER || 'root',
-    password: process.env.DB_PASS || 'password',
-    database: process.env.DB_NAME || 'zilla_test',
-    host: process.env.DB_HOST || 'localhost',
-    dialect: 'mysql',
-    logging: false
-  },
-  production: {
-    username: process.env.DB_USER || 'root',
-    password: process.env.DB_PASS || 'password',
-    database: process.env.DB_NAME || 'zilla_prod',
-    host: process.env.DB_HOST || 'localhost',
-    dialect: 'mysql',
-    logging: false
-  }
+const env = process.env.NODE_ENV || 'development';
+
+const prisma = new PrismaClient({
+    log: env === 'development' ? [
+        {
+            emit: 'event',
+            level: 'query',
+        },
+        {
+            emit: 'event',
+            level: 'error',
+        },
+        {
+            emit: 'event',
+            level: 'info',
+        },
+        {
+            emit: 'event',
+            level: 'warn',
+        },
+    ] : [],
+});
+
+if (env === 'development') {
+    prisma.$on('query', (e) => {
+        console.log('Query: ' + e.query);
+        console.log('Duration: ' + e.duration + 'ms');
+    });
+
+    prisma.$on('error', (e) => {
+        console.error('Prisma Error:', e.message);
+    });
+
+    prisma.$on('info', (e) => {
+        console.info('Prisma Info:', e.message);
+    });
+
+    prisma.$on('warn', (e) => {
+        console.warn('Prisma Warning:', e.message);
+    });
+}
+
+const checkConnection = async () => {
+    try {
+        await prisma.$connect();
+        console.log('Database connection established successfully');
+        return true;
+    } catch (error) {
+        console.error('Database connection failed:', error);
+        return false;
+    }
 };
 
-// Sequelize instance for use in the application
-const { Sequelize } = require('sequelize');
-const env = process.env.NODE_ENV || 'development';
-const config = module.exports[env];
-
-const sequelize = new Sequelize(
-  config.database,
-  config.username,
-  config.password,
-  {
-    host: config.host,
-    dialect: config.dialect,
-    logging: config.logging,
-    pool: {
-      max: 5,
-      min: 0,
-      acquire: 30000,
-      idle: 10000
+const disconnect = async () => {
+    try {
+        await prisma.$disconnect();
+        console.log('Database connection closed successfully');
+    } catch (error) {
+        console.error('Error closing database connection:', error);
+        process.exit(1);
     }
-  }
-);
+};
 
-module.exports.sequelize = sequelize;
+process.on('SIGINT', async () => {
+    await disconnect();
+    process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+    await disconnect();
+    process.exit(0);
+});
+
+module.exports = {
+    prisma,
+    checkConnection,
+    disconnect
+};
