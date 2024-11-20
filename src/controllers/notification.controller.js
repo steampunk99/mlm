@@ -1,151 +1,167 @@
-const { Op } = require('sequelize');
-const Notification = require('../models/notification.model');
-const ApiError = require('../utils/ApiError');
-const { getIO } = require('../config/socket');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+const notificationService = require('../services/notification.service');
 
 class NotificationController {
-    // Create a new notification
-    async createNotification(userId, type, title, message, data = {}, priority = 'LOW') {
+    async getNotifications(req, res) {
         try {
-            const notification = await Notification.create({
+            const userId = req.user.id;
+            const { page = 1, limit = 10, type, status, startDate, endDate } = req.query;
+
+            const notifications = await notificationService.getNotifications({
                 userId,
-                type,
-                title,
-                message,
-                data,
-                priority
-            });
-
-            // Emit real-time notification
-            const io = getIO();
-            io.to(`user_${userId}`).emit('notification', notification);
-
-            return notification;
-        } catch (error) {
-            throw new ApiError(500, 'Error creating notification');
-        }
-    }
-
-    // Get user notifications
-    async getUserNotifications(req, res) {
-        const { 
-            page = 1, 
-            limit = 10, 
-            type, 
-            isRead,
-            startDate,
-            endDate 
-        } = req.query;
-        const userId = req.user.id;
-
-        try {
-            const where = {
-                userId,
-                ...(type && { type }),
-                ...(isRead !== undefined && { isRead }),
-                ...(startDate && endDate && {
-                    createdAt: {
-                        [Op.between]: [startDate, endDate]
-                    }
-                })
-            };
-
-            const notifications = await Notification.findAndCountAll({
-                where,
-                order: [['createdAt', 'DESC']],
+                page: parseInt(page),
                 limit: parseInt(limit),
-                offset: (page - 1) * limit
+                type,
+                status,
+                startDate: startDate ? new Date(startDate) : null,
+                endDate: endDate ? new Date(endDate) : null
             });
 
             res.json({
-                notifications: notifications.rows,
-                total: notifications.count,
-                currentPage: parseInt(page),
-                totalPages: Math.ceil(notifications.count / limit)
+                success: true,
+                data: notifications
             });
         } catch (error) {
-            throw new ApiError(500, 'Error fetching notifications');
+            console.error('Get notifications error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to fetch notifications'
+            });
         }
     }
 
-    // Mark notifications as read
     async markAsRead(req, res) {
-        const { notificationIds } = req.body;
-        const userId = req.user.id;
-
         try {
-            await Notification.update(
-                { isRead: true },
-                {
-                    where: {
-                        id: notificationIds,
-                        userId
-                    }
-                }
-            );
+            const userId = req.user.id;
+            const { notificationId } = req.params;
 
-            res.json({ message: 'Notifications marked as read' });
-        } catch (error) {
-            throw new ApiError(500, 'Error updating notifications');
-        }
-    }
-
-    // Delete notifications
-    async deleteNotifications(req, res) {
-        const { notificationIds } = req.body;
-        const userId = req.user.id;
-
-        try {
-            await Notification.destroy({
-                where: {
-                    id: notificationIds,
-                    userId
-                }
+            await notificationService.markAsRead({
+                userId,
+                notificationId: parseInt(notificationId)
             });
 
-            res.json({ message: 'Notifications deleted successfully' });
+            res.json({
+                success: true,
+                message: 'Notification marked as read'
+            });
         } catch (error) {
-            throw new ApiError(500, 'Error deleting notifications');
+            console.error('Mark notification as read error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to mark notification as read'
+            });
         }
     }
 
-    // Get unread count
+    async markAllAsRead(req, res) {
+        try {
+            const userId = req.user.id;
+            const { type } = req.query;
+
+            await notificationService.markAllAsRead({
+                userId,
+                type
+            });
+
+            res.json({
+                success: true,
+                message: 'All notifications marked as read'
+            });
+        } catch (error) {
+            console.error('Mark all notifications as read error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to mark all notifications as read'
+            });
+        }
+    }
+
+    async deleteNotification(req, res) {
+        try {
+            const userId = req.user.id;
+            const { notificationId } = req.params;
+
+            await notificationService.deleteNotification({
+                userId,
+                notificationId: parseInt(notificationId)
+            });
+
+            res.json({
+                success: true,
+                message: 'Notification deleted successfully'
+            });
+        } catch (error) {
+            console.error('Delete notification error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to delete notification'
+            });
+        }
+    }
+
     async getUnreadCount(req, res) {
-        const userId = req.user.id;
-
         try {
-            const count = await Notification.count({
-                where: {
-                    userId,
-                    isRead: false
-                }
+            const userId = req.user.id;
+            const { type } = req.query;
+
+            const count = await notificationService.getUnreadCount({
+                userId,
+                type
             });
 
-            res.json({ unreadCount: count });
+            res.json({
+                success: true,
+                data: { count }
+            });
         } catch (error) {
-            throw new ApiError(500, 'Error fetching unread count');
+            console.error('Get unread count error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to get unread count'
+            });
         }
     }
 
-    // Create system notification (for internal use)
-    async createSystemNotification(userIds, title, message, data = {}) {
+    async getNotificationPreferences(req, res) {
         try {
-            const notifications = await Promise.all(
-                userIds.map(userId =>
-                    this.createNotification(
-                        userId,
-                        'SYSTEM',
-                        title,
-                        message,
-                        data,
-                        'MEDIUM'
-                    )
-                )
-            );
+            const userId = req.user.id;
 
-            return notifications;
+            const preferences = await notificationService.getNotificationPreferences(userId);
+
+            res.json({
+                success: true,
+                data: preferences
+            });
         } catch (error) {
-            throw new ApiError(500, 'Error creating system notifications');
+            console.error('Get notification preferences error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to get notification preferences'
+            });
+        }
+    }
+
+    async updateNotificationPreferences(req, res) {
+        try {
+            const userId = req.user.id;
+            const preferences = req.body;
+
+            await notificationService.updateNotificationPreferences({
+                userId,
+                preferences
+            });
+
+            res.json({
+                success: true,
+                message: 'Notification preferences updated successfully'
+            });
+        } catch (error) {
+            console.error('Update notification preferences error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to update notification preferences'
+            });
         }
     }
 }

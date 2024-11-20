@@ -1,203 +1,213 @@
-const { Op } = require('sequelize');
-const Announcement = require('../models/announcement.model');
-const NotificationController = require('./notification.controller');
-const ApiError = require('../utils/ApiError');
-const { getIO } = require('../config/socket');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+const announcementService = require('../services/announcement.service');
+const notificationService = require('../services/notification.service');
 
 class AnnouncementController {
-    // Create announcement
     async createAnnouncement(req, res) {
-        const {
-            title,
-            content,
-            type,
-            priority,
-            startDate,
-            endDate,
-            targetAudience,
-            attachments
-        } = req.body;
-
         try {
-            const announcement = await Announcement.create({
+            const { title, content, type, priority, expiryDate, audience } = req.body;
+            const authorId = req.user.id;
+
+            const announcement = await announcementService.create({
                 title,
                 content,
                 type,
                 priority,
-                startDate,
-                endDate,
-                targetAudience,
-                attachments,
-                createdBy: req.user.id
+                expiryDate: expiryDate ? new Date(expiryDate) : null,
+                audience,
+                authorId
             });
 
-            // Emit real-time announcement
-            const io = getIO();
-            io.emit('announcement', announcement);
-
-            // Create notifications for target users
-            if (announcement.targetAudience !== 'ADMIN') {
-                const userIds = await this.getTargetUserIds(announcement.targetAudience);
-                await NotificationController.createSystemNotification(
-                    userIds,
-                    `New Announcement: ${title}`,
-                    content,
-                    { announcementId: announcement.id }
-                );
+            // Notify relevant users based on audience
+            if (announcement.audience === 'ALL') {
+                const users = await prisma.user.findMany({
+                    where: { active: true }
+                });
+                for (const user of users) {
+                    await notificationService.create({
+                        userId: user.id,
+                        title: `New Announcement: ${announcement.title}`,
+                        message: announcement.content.substring(0, 100) + '...',
+                        type: 'ANNOUNCEMENT',
+                        priority: announcement.priority,
+                        metadata: { announcementId: announcement.id }
+                    });
+                }
             }
 
-            res.status(201).json(announcement);
+            res.status(201).json({
+                success: true,
+                data: announcement
+            });
         } catch (error) {
-            throw new ApiError(500, 'Error creating announcement');
+            console.error('Create announcement error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to create announcement'
+            });
         }
     }
 
-    // Get all announcements
     async getAnnouncements(req, res) {
-        const {
-            page = 1,
-            limit = 10,
-            type,
-            priority,
-            startDate,
-            endDate,
-            isActive
-        } = req.query;
-
         try {
-            const where = {
-                ...(type && { type }),
-                ...(priority && { priority }),
-                ...(isActive !== undefined && { isActive }),
-                ...(startDate && endDate && {
-                    startDate: {
-                        [Op.between]: [startDate, endDate]
-                    }
-                })
-            };
+            const { type, priority, startDate, endDate, page = 1, limit = 10 } = req.query;
 
-            // Add audience check based on user role
-            if (!req.user.isAdmin) {
-                where[Op.or] = [
-                    { targetAudience: 'ALL' },
-                    { targetAudience: req.user.active ? 'ACTIVE' : 'INACTIVE' }
-                ];
-            }
-
-            const announcements = await Announcement.findAndCountAll({
-                where,
-                order: [
-                    ['priority', 'DESC'],
-                    ['createdAt', 'DESC']
-                ],
+            const announcements = await announcementService.findAll({
+                type,
+                priority,
+                startDate: startDate ? new Date(startDate) : null,
+                endDate: endDate ? new Date(endDate) : null,
+                page: parseInt(page),
                 limit: parseInt(limit),
-                offset: (page - 1) * limit
+                audience: req.user.isAdmin ? undefined : ['ALL', req.user.role]
             });
 
             res.json({
-                announcements: announcements.rows,
-                total: announcements.count,
-                currentPage: parseInt(page),
-                totalPages: Math.ceil(announcements.count / limit)
+                success: true,
+                data: announcements
             });
         } catch (error) {
-            throw new ApiError(500, 'Error fetching announcements');
+            console.error('Get announcements error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to fetch announcements'
+            });
         }
     }
 
-    // Update announcement
+    async getAnnouncementById(req, res) {
+        try {
+            const { id } = req.params;
+            const announcement = await announcementService.findById(id);
+
+            if (!announcement) {
+                return res.status(404).json({
+                    success: false,
+                    error: 'Announcement not found'
+                });
+            }
+
+            // Check if user has access to this announcement
+            if (!req.user.isAdmin && 
+                announcement.audience !== 'ALL' && 
+                announcement.audience !== req.user.role) {
+                return res.status(403).json({
+                    success: false,
+                    error: 'Not authorized to view this announcement'
+                });
+            }
+
+            // Update view count
+            await announcementService.incrementViews(id);
+
+            res.json({
+                success: true,
+                data: announcement
+            });
+        } catch (error) {
+            console.error('Get announcement by ID error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to fetch announcement'
+            });
+        }
+    }
+
     async updateAnnouncement(req, res) {
-        const { id } = req.params;
-        const updateData = req.body;
-
         try {
-            const announcement = await Announcement.findByPk(id);
-            if (!announcement) {
-                throw new ApiError(404, 'Announcement not found');
+            const { id } = req.params;
+            const updates = req.body;
+
+            if (!req.user.isAdmin) {
+                return res.status(403).json({
+                    success: false,
+                    error: 'Not authorized to update announcements'
+                });
             }
 
-            await announcement.update(updateData);
-
-            // Emit update event
-            const io = getIO();
-            io.emit('announcementUpdate', announcement);
-
-            res.json(announcement);
-        } catch (error) {
-            throw new ApiError(500, 'Error updating announcement');
-        }
-    }
-
-    // Delete announcement
-    async deleteAnnouncement(req, res) {
-        const { id } = req.params;
-
-        try {
-            const announcement = await Announcement.findByPk(id);
+            const announcement = await announcementService.findById(id);
             if (!announcement) {
-                throw new ApiError(404, 'Announcement not found');
+                return res.status(404).json({
+                    success: false,
+                    error: 'Announcement not found'
+                });
             }
 
-            await announcement.destroy();
-
-            // Emit deletion event
-            const io = getIO();
-            io.emit('announcementDelete', { id });
-
-            res.json({ message: 'Announcement deleted successfully' });
-        } catch (error) {
-            throw new ApiError(500, 'Error deleting announcement');
-        }
-    }
-
-    // Get active announcements
-    async getActiveAnnouncements(req, res) {
-        try {
-            const announcements = await Announcement.findAll({
-                where: {
-                    isActive: true,
-                    startDate: {
-                        [Op.lte]: new Date()
-                    },
-                    [Op.or]: [
-                        { endDate: null },
-                        { endDate: { [Op.gte]: new Date() } }
-                    ],
-                    [Op.or]: [
-                        { targetAudience: 'ALL' },
-                        { targetAudience: req.user.active ? 'ACTIVE' : 'INACTIVE' }
-                    ]
-                },
-                order: [
-                    ['priority', 'DESC'],
-                    ['createdAt', 'DESC']
-                ]
+            const updatedAnnouncement = await announcementService.update(id, {
+                ...updates,
+                expiryDate: updates.expiryDate ? new Date(updates.expiryDate) : announcement.expiryDate
             });
 
-            res.json(announcements);
+            res.json({
+                success: true,
+                data: updatedAnnouncement
+            });
         } catch (error) {
-            throw new ApiError(500, 'Error fetching active announcements');
+            console.error('Update announcement error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to update announcement'
+            });
         }
     }
 
-    // Helper method to get target user IDs
-    async getTargetUserIds(targetAudience) {
-        const where = {};
-        switch (targetAudience) {
-            case 'ACTIVE':
-                where.active = true;
-                break;
-            case 'INACTIVE':
-                where.active = false;
-                break;
+    async deleteAnnouncement(req, res) {
+        try {
+            const { id } = req.params;
+
+            if (!req.user.isAdmin) {
+                return res.status(403).json({
+                    success: false,
+                    error: 'Not authorized to delete announcements'
+                });
+            }
+
+            const announcement = await announcementService.findById(id);
+            if (!announcement) {
+                return res.status(404).json({
+                    success: false,
+                    error: 'Announcement not found'
+                });
+            }
+
+            await announcementService.delete(id);
+
+            res.json({
+                success: true,
+                message: 'Announcement deleted successfully'
+            });
+        } catch (error) {
+            console.error('Delete announcement error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to delete announcement'
+            });
         }
+    }
 
-        const users = await User.findAll({
-            where,
-            attributes: ['id']
-        });
+    async getAnnouncementStats(req, res) {
+        try {
+            if (!req.user.isAdmin) {
+                return res.status(403).json({
+                    success: false,
+                    error: 'Not authorized to view announcement statistics'
+                });
+            }
 
-        return users.map(user => user.id);
+            const stats = await announcementService.getStats();
+
+            res.json({
+                success: true,
+                data: stats
+            });
+        } catch (error) {
+            console.error('Get announcement stats error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to fetch announcement statistics'
+            });
+        }
     }
 }
 
