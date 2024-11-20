@@ -1,0 +1,283 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// User model
+model User {
+  id            Int       @id @default(autoincrement())
+  username      String    @unique
+  email         String    @unique
+  password      String
+  firstName     String
+  lastName      String
+  phone         String
+  status        String    @default("ACTIVE")
+  role          Role      @default(USER)
+  isVerified    Boolean   @default(false)
+  node          Node?     // One-to-one relation with Node
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  
+  // Reverse relations
+  announcements Announcement[] @relation("CreatedBy")
+  notifications Notification[] @relation("NotificationUser")
+  withdrawals   Withdrawal[]
+  reports       Report[]
+  commissions      Commission[]
+  sourceCommissions Commission[] @relation("CommissionSource")
+  
+  @@map("users")
+}
+
+// Node model (MLM structure)
+model Node {
+  id          Int       @id @default(autoincrement())
+  userId      Int       @unique @map("user_id")
+  user        User      @relation(fields: [userId], references: [id])
+  position    Position
+  status      String    @default("ACTIVE")
+  level       Int       @default(1)
+  sponsorId   Int?      @map("sponsor_id")
+  placementId Int?      @map("placement_id")
+  
+  // Self-relations for MLM structure
+  sponsor     Node?     @relation("SponsorRelation", fields: [sponsorId], references: [id])
+  sponsored   Node[]    @relation("SponsorRelation")
+  parent      Node?     @relation("TreeStructure", fields: [placementId], references: [id])
+  children    Node[]    @relation("TreeStructure")
+  
+  // Related entities
+  package     NodePackage?
+  payments    NodePayment[]
+  statements  NodeStatement[]
+  withdrawals NodeWithdrawal[]
+  
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@map("nodes")
+}
+
+// Package model
+model Package {
+  id          Int           @id @default(autoincrement())
+  name        String
+  description String?       @db.Text
+  price       Decimal       @db.Decimal(10, 2)
+  level       Int
+  status      String       @default("ACTIVE")
+  benefits    Json?
+  nodePackages NodePackage[]
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  @@map("packages")
+}
+
+// Node Package relation
+model NodePackage {
+  id        Int      @id @default(autoincrement())
+  nodeId    Int      @unique @map("node_id")
+  packageId Int      @map("package_id")
+  status    String   @default("ACTIVE")
+  node      Node     @relation(fields: [nodeId], references: [id])
+  package   Package  @relation(fields: [packageId], references: [id])
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("node_packages")
+}
+
+// Node Payment model
+model NodePayment {
+  id        Int      @id @default(autoincrement())
+  nodeId    Int      @map("node_id")
+  amount    Decimal  @db.Decimal(10, 2)
+  status    PaymentStatus @default(PENDING)
+  type      String
+  reference String?
+  node      Node     @relation(fields: [nodeId], references: [id])
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("node_payments")
+}
+
+// Node Statement model
+model NodeStatement {
+  id          Int      @id @default(autoincrement())
+  nodeId      Int      @map("node_id")
+  amount      Decimal  @db.Decimal(10, 2)
+  type        String
+  description String?  @db.Text
+  node        Node     @relation(fields: [nodeId], references: [id])
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("node_statements")
+}
+
+// Node Withdrawal model
+model NodeWithdrawal {
+  id                Int      @id @default(autoincrement())
+  nodeId           Int      @map("node_id")
+  amount           Decimal  @db.Decimal(10, 2)
+  status           WithdrawalStatus @default(PENDING)
+  reason           String?  @db.Text
+  paymentPhone    String?  @map("payment_phone_number")
+  paymentType     String   @default("mobile money") @map("payment_type")
+  withdrawalDate  DateTime? @map("withdrawal_date")
+  node            Node     @relation(fields: [nodeId], references: [id])
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("node_withdrawals")
+}
+
+// Commission model
+model Commission {
+  id          Int             @id @default(autoincrement())
+  userId      Int            @map("user_id")
+  amount      Decimal        @db.Decimal(15, 2)
+  type        CommissionType
+  description String?        @db.Text
+  status      CommissionStatus @default(PENDING)
+  sourceUserId Int?          @map("source_user_id")
+  packageId   Int?          @map("package_id")
+  processedAt DateTime?      @map("processed_at")
+  
+  // Relations
+  user        User          @relation(fields: [userId], references: [id])
+  sourceUser  User?         @relation("CommissionSource", fields: [sourceUserId], references: [id])
+  package     Package?      @relation(fields: [packageId], references: [id])
+  
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+
+  @@map("commissions")
+}
+
+// Announcement model
+model Announcement {
+  id          Int      @id @default(autoincrement())
+  title       String
+  content     String   @db.Text
+  type        AnnouncementType @default(GENERAL)
+  priority    Priority @default(LOW)
+  status      String   @default("DRAFT")
+  createdBy   Int      @map("created_by")
+  author      User     @relation("CreatedBy", fields: [createdBy], references: [id])
+  publishDate DateTime? @map("publish_date")
+  expiryDate  DateTime? @map("expiry_date")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("announcements")
+}
+
+// Notification model
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  title     String
+  message   String   @db.Text
+  type      String
+  isRead    Boolean  @default(false) @map("is_read")
+  user      User     @relation("NotificationUser", fields: [userId], references: [id])
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("notifications")
+}
+
+// Report model
+model Report {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  type      String
+  data      Json
+  status    String   @default("PENDING")
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("reports")
+}
+
+// Withdrawal model
+model Withdrawal {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  amount    Decimal  @db.Decimal(10, 2)
+  status    WithdrawalStatus @default(PENDING)
+  method    String
+  details   Json?
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("withdrawals")
+}
+
+// Enums
+enum Role {
+  USER
+  ADMIN
+  MODERATOR
+}
+
+enum Position {
+  LEFT
+  RIGHT
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum WithdrawalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  COMPLETED
+}
+
+enum AnnouncementType {
+  GENERAL
+  MAINTENANCE
+  UPDATE
+  PROMOTION
+  EMERGENCY
+}
+
+enum CommissionType {
+  DIRECT
+  MATCHING
+  LEVEL
+}
+
+enum CommissionStatus {
+  PENDING
+  PROCESSED
+  FAILED
+}
