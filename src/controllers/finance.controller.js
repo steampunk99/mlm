@@ -1,9 +1,48 @@
-const { NodeStatement, NodeWithdrawal, NodeChildren, User } = require('../models');
+const nodeStatementService = require('../services/nodeStatement.service');
+const nodeWithdrawalService = require('../services/nodeWithdrawal.service');
+const nodeService = require('../services/node.service');
+const userService = require('../services/user.service');
 const { validateWithdrawalRequest } = require('../middleware/validate');
-const { calculateCommissions } = require('../utils/commissionUtils');
-const { Op } = require('sequelize');
+const { calculateCommissions } = require('../utils/commission.utils');
 
 class FinanceController {
+  /**
+   * Get user's current balance
+   * @param {Request} req 
+   * @param {Response} res 
+   */
+  async getBalance(req, res) {
+    try {
+      const userId = req.user.id;
+      const node = await nodeService.findByUserId(userId);
+      
+      if (!node) {
+        return res.status(404).json({
+          success: false,
+          message: 'Node not found for user'
+        });
+      }
+
+      const balance = await nodeStatementService.getBalance(node.id);
+
+      res.json({
+        success: true,
+        data: {
+          balance: balance.currentBalance,
+          totalCredits: balance.totalCredits,
+          totalDebits: balance.totalDebits
+        }
+      });
+
+    } catch (error) {
+      console.error('Get balance error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error retrieving balance'
+      });
+    }
+  }
+
   /**
    * Get user's statement/transactions
    * @param {Request} req 
@@ -14,26 +53,18 @@ class FinanceController {
       const userId = req.user.id;
       const { startDate, endDate, type } = req.query;
       
-      const whereClause = {
-        node_id: userId,
-        is_deleted: false
-      };
-
-      if (startDate && endDate) {
-        whereClause.event_date = {
-          [Op.between]: [startDate, endDate]
-        };
+      const node = await nodeService.findByUserId(userId);
+      if (!node) {
+        return res.status(404).json({
+          success: false,
+          message: 'Node not found for user'
+        });
       }
 
-      if (type === 'credit') {
-        whereClause.is_credit = true;
-      } else if (type === 'debit') {
-        whereClause.is_debit = true;
-      }
-
-      const statements = await NodeStatement.findAll({
-        where: whereClause,
-        order: [['event_date', 'DESC']]
+      const statements = await nodeStatementService.findAll(node.id, {
+        startDate: startDate ? new Date(startDate) : undefined,
+        endDate: endDate ? new Date(endDate) : undefined,
+        type
       });
 
       res.json({
@@ -45,54 +76,7 @@ class FinanceController {
       console.error('Get statement error:', error);
       res.status(500).json({
         success: false,
-        message: 'Internal server error'
-      });
-    }
-  }
-
-  /**
-   * Get user's current balance
-   * @param {Request} req 
-   * @param {Response} res 
-   */
-  async getBalance(req, res) {
-    try {
-      const userId = req.user.id;
-
-      const credits = await NodeStatement.sum('amount', {
-        where: {
-          node_id: userId,
-          is_credit: true,
-          is_effective: true,
-          is_deleted: false
-        }
-      }) || 0;
-
-      const debits = await NodeStatement.sum('amount', {
-        where: {
-          node_id: userId,
-          is_debit: true,
-          is_effective: true,
-          is_deleted: false
-        }
-      }) || 0;
-
-      const balance = credits - debits;
-
-      res.json({
-        success: true,
-        data: {
-          balance,
-          total_credits: credits,
-          total_debits: debits
-        }
-      });
-
-    } catch (error) {
-      console.error('Get balance error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Internal server error'
+        message: 'Error retrieving statements'
       });
     }
   }
@@ -113,11 +97,19 @@ class FinanceController {
       }
 
       const userId = req.user.id;
-      const { amount, payment_method, phone_number } = req.body;
+      const { amount, paymentMethod, phoneNumber } = req.body;
+
+      const node = await nodeService.findByUserId(userId);
+      if (!node) {
+        return res.status(404).json({
+          success: false,
+          message: 'Node not found for user'
+        });
+      }
 
       // Check user's balance
-      const balance = await this.getUserBalance(userId);
-      if (balance < amount) {
+      const balance = await nodeStatementService.getBalance(node.id);
+      if (balance.currentBalance < amount) {
         return res.status(400).json({
           success: false,
           message: 'Insufficient balance'
@@ -125,32 +117,31 @@ class FinanceController {
       }
 
       // Check pending withdrawals
-      const pendingWithdrawal = await NodeWithdrawal.findOne({
-        where: {
-          node_id: userId,
-          status: 'pending',
-          is_deleted: false
-        }
-      });
-
-      if (pendingWithdrawal) {
+      const pendingWithdrawals = await nodeWithdrawalService.findPendingByNodeId(node.id);
+      if (pendingWithdrawals.length > 0) {
         return res.status(400).json({
           success: false,
           message: 'You already have a pending withdrawal request'
         });
       }
 
-      const user = await User.findByPk(userId);
-      const withdrawal = await NodeWithdrawal.create({
-        node_id: userId,
-        node_position: user.position,
-        node_username: user.username,
+      const withdrawal = await nodeWithdrawalService.create({
+        nodeId: node.id,
         amount,
-        payment_type: payment_method,
-        payment_phone_number: phone_number,
-        status: 'pending',
-        withdrawal_date: new Date(),
-        withdrawal_timestamp: new Date()
+        paymentMethod,
+        paymentPhone: phoneNumber,
+        status: 'PENDING'
+      });
+
+      // Create statement record for withdrawal
+      await nodeStatementService.create({
+        nodeId: node.id,
+        amount,
+        type: 'DEBIT',
+        description: 'Withdrawal request',
+        status: 'PENDING',
+        referenceType: 'WITHDRAWAL',
+        referenceId: withdrawal.id
       });
 
       res.status(201).json({
@@ -163,7 +154,7 @@ class FinanceController {
       console.error('Request withdrawal error:', error);
       res.status(500).json({
         success: false,
-        message: 'Internal server error'
+        message: 'Error processing withdrawal request'
       });
     }
   }
@@ -178,18 +169,16 @@ class FinanceController {
       const userId = req.user.id;
       const { status } = req.query;
 
-      const whereClause = {
-        node_id: userId,
-        is_deleted: false
-      };
-
-      if (status) {
-        whereClause.status = status;
+      const node = await nodeService.findByUserId(userId);
+      if (!node) {
+        return res.status(404).json({
+          success: false,
+          message: 'Node not found for user'
+        });
       }
 
-      const withdrawals = await NodeWithdrawal.findAll({
-        where: whereClause,
-        order: [['withdrawal_date', 'DESC']]
+      const withdrawals = await nodeWithdrawalService.findAll(node.id, {
+        status
       });
 
       res.json({
@@ -201,7 +190,7 @@ class FinanceController {
       console.error('Get withdrawals error:', error);
       res.status(500).json({
         success: false,
-        message: 'Internal server error'
+        message: 'Error retrieving withdrawals'
       });
     }
   }
@@ -213,69 +202,37 @@ class FinanceController {
    */
   async distributeCommissions(req, res) {
     try {
-      const { package_purchase_id } = req.body;
+      const { packagePurchaseId } = req.body;
       
       // Get package purchase details and calculate commissions
-      const commissions = await calculateCommissions(package_purchase_id);
+      const commissions = await calculateCommissions(packagePurchaseId);
 
       // Create commission statements
-      for (const commission of commissions) {
-        await NodeStatement.create({
-          node_id: commission.node_id,
-          node_position: commission.node_position,
-          node_username: commission.node_username,
+      const statements = await Promise.all(commissions.map(commission => 
+        nodeStatementService.create({
+          nodeId: commission.nodeId,
           amount: commission.amount,
-          is_credit: true,
-          is_debit: false,
-          reason: commission.reason,
-          table_name: 'node_package',
-          table_id: package_purchase_id,
-          event_date: new Date(),
-          event_timestamp: new Date(),
-          is_effective: true
-        });
-      }
+          type: 'CREDIT',
+          description: commission.reason,
+          status: 'COMPLETED',
+          referenceType: 'PACKAGE',
+          referenceId: packagePurchaseId
+        })
+      ));
 
       res.json({
         success: true,
         message: 'Commissions distributed successfully',
-        data: commissions
+        data: statements
       });
 
     } catch (error) {
       console.error('Distribute commissions error:', error);
       res.status(500).json({
         success: false,
-        message: 'Internal server error'
+        message: 'Error distributing commissions'
       });
     }
-  }
-
-  /**
-   * Helper method to get user's current balance
-   * @param {number} userId 
-   * @returns {Promise<number>}
-   */
-  async getUserBalance(userId) {
-    const credits = await NodeStatement.sum('amount', {
-      where: {
-        node_id: userId,
-        is_credit: true,
-        is_effective: true,
-        is_deleted: false
-      }
-    }) || 0;
-
-    const debits = await NodeStatement.sum('amount', {
-      where: {
-        node_id: userId,
-        is_debit: true,
-        is_effective: true,
-        is_deleted: false
-      }
-    }) || 0;
-
-    return credits - debits;
   }
 }
 
