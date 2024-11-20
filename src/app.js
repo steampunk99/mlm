@@ -7,7 +7,7 @@ const swaggerUi = require('swagger-ui-express');
 const swaggerSpec = require('./config/swagger');
 
 // Import routes
-const authRoutes = require('./routes/auth');
+const authRoutes = require('./routes/auth.routes');
 
 // Import middleware
 const { errorHandler } = require('./middleware/error');

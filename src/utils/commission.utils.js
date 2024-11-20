@@ -1,12 +1,13 @@
-const { Node, NodeStatement } = require('../models');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
 
 /**
  * Calculate and distribute commissions for a package purchase
- * @param {Node} user - The user who purchased the package
- * @param {Package} pkg - The package that was purchased
- * @param {Transaction} transaction - Sequelize transaction
+ * @param {Object} user - The user who purchased the package
+ * @param {Object} pkg - The package that was purchased
+ * @param {Object} tx - Prisma transaction
  */
-async function calculateCommissions(user, pkg, transaction) {
+async function calculateCommissions(user, pkg, tx) {
     try {
         // Get sponsor chain (up to 10 levels)
         const sponsorChain = await getSponsorChain(user.id, 10);
@@ -33,23 +34,29 @@ async function calculateCommissions(user, pkg, transaction) {
             const commissionAmount = (pkg.price * commissionRate) / 100;
 
             // Create commission statement
-            await NodeStatement.create({
-                node_id: sponsor.id,
-                node_username: sponsor.username,
-                node_position: sponsor.position,
-                amount: commissionAmount,
-                description: `Level ${level} commission from ${user.username}'s package purchase`,
-                is_debit: false,
-                is_credit: true,
-                is_effective: true,
-                event_date: new Date(),
-                event_timestamp: new Date()
-            }, { transaction });
+            await tx.nodeStatement.create({
+                data: {
+                    nodeId: sponsor.id,
+                    nodeUsername: sponsor.username,
+                    nodePosition: sponsor.position,
+                    amount: commissionAmount,
+                    description: `Level ${level} commission from ${user.username}'s package purchase`,
+                    isDebit: false,
+                    isCredit: true,
+                    isEffective: true,
+                    eventDate: new Date(),
+                    eventTimestamp: new Date()
+                }
+            });
 
             // Update sponsor's balance
-            await sponsor.increment('current_balance', {
-                by: commissionAmount,
-                transaction
+            await tx.node.update({
+                where: { id: sponsor.id },
+                data: {
+                    currentBalance: {
+                        increment: commissionAmount
+                    }
+                }
             });
         }
 
@@ -63,17 +70,26 @@ async function calculateCommissions(user, pkg, transaction) {
  * Get the sponsor chain for a user up to specified levels
  * @param {number} userId - The user's ID
  * @param {number} levels - Number of levels to retrieve
- * @returns {Promise<Node[]>} Array of sponsors
+ * @returns {Promise<Array>} Array of sponsors
  */
 async function getSponsorChain(userId, levels) {
     const sponsors = [];
-    let currentUser = await Node.findByPk(userId);
+    let currentUser = await prisma.node.findUnique({
+        where: { id: userId }
+    });
 
     while (currentUser && sponsors.length < levels) {
-        if (!currentUser.sponsor_node_id) break;
+        if (!currentUser.sponsorNodeId) break;
 
-        const sponsor = await Node.findByPk(currentUser.sponsor_node_id);
-        if (!sponsor || sponsor.is_deleted || sponsor.status !== 'active') break;
+        const sponsor = await prisma.node.findFirst({
+            where: {
+                id: currentUser.sponsorNodeId,
+                isDeleted: false,
+                status: 'active'
+            }
+        });
+
+        if (!sponsor) break;
 
         sponsors.push(sponsor);
         currentUser = sponsor;

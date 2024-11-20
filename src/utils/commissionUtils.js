@@ -1,4 +1,5 @@
-const { NodePackage, NodeChildren, Package } = require('../models');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
 
 /**
  * Calculate commissions for a package purchase
@@ -8,18 +9,21 @@ const { NodePackage, NodeChildren, Package } = require('../models');
 async function calculateCommissions(packagePurchaseId) {
   const commissions = [];
 
-  // Get package purchase details
-  const packagePurchase = await NodePackage.findOne({
+  // Get package purchase details with package info
+  const packagePurchase = await prisma.nodePackage.findUnique({
     where: { id: packagePurchaseId },
-    include: [{ model: Package }]
+    include: {
+      package: true,
+      node: true
+    }
   });
 
-  if (!packagePurchase || !packagePurchase.is_paid) {
+  if (!packagePurchase || !packagePurchase.isPaid) {
     return commissions;
   }
 
   // Get upline (genealogy)
-  const genealogy = await getUpline(packagePurchase.node_id);
+  const genealogy = await getUpline(packagePurchase.nodeId);
   
   // Calculate commissions based on levels
   for (let i = 0; i < genealogy.length; i++) {
@@ -47,11 +51,11 @@ async function calculateCommissions(packagePurchaseId) {
     const commissionAmount = packagePurchase.price * commissionPercentage;
 
     commissions.push({
-      node_id: uplineNode.parent_node_id,
-      node_position: uplineNode.parent_node_position,
-      node_username: uplineNode.parent_node_username,
+      nodeId: uplineNode.parentNodeId,
+      nodePosition: uplineNode.parentNodePosition,
+      nodeUsername: uplineNode.parentNodeUsername,
       amount: commissionAmount,
-      reason: `Level ${i + 1} commission from ${packagePurchase.node_username}'s package purchase`
+      reason: `Level ${i + 1} commission from ${packagePurchase.node.username}'s package purchase`
     });
   }
 
@@ -75,17 +79,27 @@ async function getUpline(nodeId) {
 
   // Get up to 10 levels of upline
   for (let i = 0; i < 10; i++) {
-    const node = await NodeChildren.findOne({
+    const node = await prisma.nodeChildren.findFirst({
       where: {
-        child_node_id: currentNodeId,
-        is_deleted: false
+        childNodeId: currentNodeId,
+        isDeleted: false
+      },
+      include: {
+        parentNode: {
+          select: {
+            username: true
+          }
+        }
       }
     });
 
     if (!node) break;
 
-    upline.push(node);
-    currentNodeId = node.parent_node_id;
+    upline.push({
+      ...node,
+      parentNodeUsername: node.parentNode.username
+    });
+    currentNodeId = node.parentNodeId;
   }
 
   return upline;
@@ -93,51 +107,82 @@ async function getUpline(nodeId) {
 
 /**
  * Calculate binary matching bonus
- * @param {NodePackage} packagePurchase 
+ * @param {Object} packagePurchase 
  * @returns {Promise<Object|null>}
  */
 async function calculateBinaryBonus(packagePurchase) {
   try {
-    const parent = await NodeChildren.findOne({
+    const parent = await prisma.nodeChildren.findFirst({
       where: {
-        child_node_id: packagePurchase.node_id,
-        is_deleted: false
+        childNodeId: packagePurchase.nodeId,
+        isDeleted: false
+      },
+      include: {
+        parentNode: true
       }
     });
 
     if (!parent) return null;
 
-    // Get parent's children
-    const siblings = await NodeChildren.findAll({
-      where: {
-        parent_node_id: parent.parent_node_id,
-        is_deleted: false
-      }
-    });
+    // Get parent's left and right team volume
+    const [leftVolume, rightVolume] = await Promise.all([
+      calculateTeamVolume(parent.parentNodeId, 'LEFT'),
+      calculateTeamVolume(parent.parentNodeId, 'RIGHT')
+    ]);
 
-    // Check if this completes a binary pair
-    const leftChildren = siblings.filter(child => child.direction === 'L');
-    const rightChildren = siblings.filter(child => child.direction === 'R');
+    // Calculate matching bonus (10% of smaller leg)
+    const matchingVolume = Math.min(leftVolume, rightVolume);
+    const bonusAmount = matchingVolume * 0.10;
 
-    if (leftChildren.length > 0 && rightChildren.length > 0) {
-      // Calculate binary matching bonus (e.g., 5% of package price)
-      const bonusAmount = packagePurchase.price * 0.05;
+    if (bonusAmount <= 0) return null;
 
-      return {
-        node_id: parent.parent_node_id,
-        node_position: parent.parent_node_position,
-        node_username: parent.parent_node_username,
-        amount: bonusAmount,
-        reason: `Binary matching bonus from ${packagePurchase.node_username}'s package purchase`
-      };
-    }
-
-    return null;
-
+    return {
+      nodeId: parent.parentNodeId,
+      nodeUsername: parent.parentNode.username,
+      amount: bonusAmount,
+      reason: 'Binary matching bonus'
+    };
   } catch (error) {
-    console.error('Calculate binary bonus error:', error);
+    console.error('Error calculating binary bonus:', error);
     return null;
   }
+}
+
+/**
+ * Calculate team volume for binary bonus
+ * @param {number} nodeId 
+ * @param {string} position 
+ * @returns {Promise<number>}
+ */
+async function calculateTeamVolume(nodeId, position) {
+  const children = await prisma.nodeChildren.findMany({
+    where: {
+      parentNodeId: nodeId,
+      parentNodePosition: position,
+      isDeleted: false
+    },
+    include: {
+      childNode: {
+        include: {
+          packages: {
+            where: {
+              isPaid: true
+            },
+            include: {
+              package: true
+            }
+          }
+        }
+      }
+    }
+  });
+
+  let volume = 0;
+  for (const child of children) {
+    volume += child.childNode.packages.reduce((sum, pkg) => sum + pkg.price, 0);
+  }
+
+  return volume;
 }
 
 module.exports = {

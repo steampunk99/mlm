@@ -209,6 +209,29 @@ class AuthController {
   }
 
   /**
+   * Logout user
+   * @param {Request} req 
+   * @param {Response} res 
+   */
+  async logout(req, res) {
+    try {
+      // Clear auth token from response
+      res.clearCookie('token');
+
+      res.json({
+        success: true,
+        message: 'Logout successful'
+      });
+    } catch (error) {
+      console.error('Logout error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error during logout'
+      });
+    }
+  }
+
+  /**
    * Reset password request
    * @param {Request} req 
    * @param {Response} res 
@@ -274,6 +297,292 @@ class AuthController {
       res.status(500).json({
         success: false,
         message: 'Error resetting password'
+      });
+    }
+  }
+
+  /**
+   * Change password while logged in
+   * @param {Request} req 
+   * @param {Response} res 
+   */
+  async changePassword(req, res) {
+    try {
+      const { currentPassword, newPassword } = req.body;
+      const userId = req.user.id;
+
+      // Get user
+      const user = await userService.findById(userId);
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+
+      // Verify current password
+      const validPassword = await bcrypt.compare(currentPassword, user.password);
+      if (!validPassword) {
+        return res.status(401).json({
+          success: false,
+          message: 'Current password is incorrect'
+        });
+      }
+
+      // Hash new password
+      const salt = await bcrypt.genSalt(10);
+      const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+      // Update password
+      await userService.updatePassword(userId, hashedPassword);
+
+      res.json({
+        success: true,
+        message: 'Password changed successfully'
+      });
+
+    } catch (error) {
+      console.error('Change password error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error changing password'
+      });
+    }
+  }
+
+  /**
+   * Get user profile
+   * @param {Request} req 
+   * @param {Response} res 
+   */
+  async getProfile(req, res) {
+    try {
+      const userId = req.user.id;
+
+      const user = await userService.findById(userId);
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+
+      res.json({
+        success: true,
+        data: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          phone: user.phone,
+          country: user.country,
+          role: user.role,
+          status: user.status
+        }
+      });
+
+    } catch (error) {
+      console.error('Get profile error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error getting profile'
+      });
+    }
+  }
+
+  /**
+   * Update user profile
+   * @param {Request} req 
+   * @param {Response} res 
+   */
+  async updateProfile(req, res) {
+    try {
+      const userId = req.user.id;
+      const { firstName, lastName, phone, country } = req.body;
+
+      const user = await userService.findById(userId);
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+
+      // Update user profile
+      await userService.updateProfile(userId, {
+        firstName: firstName || user.firstName,
+        lastName: lastName || user.lastName,
+        phone: phone || user.phone,
+        country: country || user.country
+      });
+
+      res.json({
+        success: true,
+        message: 'Profile updated successfully'
+      });
+
+    } catch (error) {
+      console.error('Update profile error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error updating profile'
+      });
+    }
+  }
+
+  /**
+   * Verify email address
+   * @param {Request} req 
+   * @param {Response} res 
+   */
+  async verifyEmail(req, res) {
+    try {
+      const { token } = req.body;
+
+      // Verify token
+      const userId = await userService.verifyEmailToken(token);
+      if (!userId) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid or expired token'
+        });
+      }
+
+      // Update user's email verification status
+      await userService.markEmailAsVerified(userId);
+
+      res.json({
+        success: true,
+        message: 'Email verified successfully'
+      });
+
+    } catch (error) {
+      console.error('Email verification error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error verifying email'
+      });
+    }
+  }
+
+  /**
+   * Resend verification email
+   * @param {Request} req 
+   * @param {Response} res 
+   */
+  async resendVerification(req, res) {
+    try {
+      const { email } = req.body;
+
+      const user = await userService.findByEmail(email);
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+
+      if (user.isEmailVerified) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email is already verified'
+        });
+      }
+
+      // Generate new verification token and send email
+      await userService.sendVerificationEmail(user);
+
+      res.json({
+        success: true,
+        message: 'Verification email sent'
+      });
+
+    } catch (error) {
+      console.error('Resend verification error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error sending verification email'
+      });
+    }
+  }
+
+  /**
+   * Enable two-factor authentication
+   * @param {Request} req 
+   * @param {Response} res 
+   */
+  async enable2FA(req, res) {
+    try {
+      const userId = req.user.id;
+
+      // Generate 2FA secret and QR code
+      const { secret, qrCode } = await userService.generate2FASecret(userId);
+
+      res.json({
+        success: true,
+        data: {
+          secret,
+          qrCode
+        },
+        message: 'Two-factor authentication setup initiated'
+      });
+
+    } catch (error) {
+      console.error('Enable 2FA error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error enabling two-factor authentication'
+      });
+    }
+  }
+
+  /**
+   * Disable two-factor authentication
+   * @param {Request} req 
+   * @param {Response} res 
+   */
+  async disable2FA(req, res) {
+    try {
+      const userId = req.user.id;
+
+      await userService.disable2FA(userId);
+
+      res.json({
+        success: true,
+        message: 'Two-factor authentication disabled'
+      });
+
+    } catch (error) {
+      console.error('Disable 2FA error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error disabling two-factor authentication'
+      });
+    }
+  }
+
+  /**
+   * Get user sessions
+   * @param {Request} req 
+   * @param {Response} res 
+   */
+  async getSessions(req, res) {
+    try {
+      const userId = req.user.id;
+
+      const sessions = await userService.getUserSessions(userId);
+
+      res.json({
+        success: true,
+        data: sessions
+      });
+
+    } catch (error) {
+      console.error('Get sessions error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error getting sessions'
       });
     }
   }

@@ -1,12 +1,11 @@
 const app = require('./app');
-const { sequelize } = require('./config/database');
+const prisma = require('./lib/prisma');
 
-// Database connection and server start
 const PORT = process.env.PORT || 3000;
 
 async function startServer() {
     try {
-        await sequelize.authenticate();
+        await prisma.$connect();
         console.log('Database connection established successfully.');
         
         app.listen(PORT, () => {
@@ -19,3 +18,13 @@ async function startServer() {
 }
 
 startServer();
+
+process.on('SIGINT', async () => {
+    await prisma.$disconnect();
+    process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+    await prisma.$disconnect();
+    process.exit(0);
+});

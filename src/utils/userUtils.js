@@ -1,4 +1,5 @@
-const { User } = require('../models');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
 
 /**
  * Generate a unique username from full name
@@ -17,7 +18,10 @@ async function generateUsername(fullName) {
 
   // Keep trying until we find a unique username
   while (true) {
-    const existingUser = await User.findOne({ where: { username } });
+    const existingUser = await prisma.user.findUnique({
+      where: { username }
+    });
+    
     if (!existingUser) {
       return username;
     }

@@ -100,7 +100,7 @@ router.post('/logout', isActive, authController.logout);
 router.post('/forgot-password', [
     body('email').isEmail().normalizeEmail(),
     validate
-], authController.forgotPassword);
+], authController.requestPasswordReset);
 
 /**
  * @swagger
@@ -127,7 +127,7 @@ router.post('/change-password', [
     body('currentPassword').notEmpty(),
     body('newPassword').isLength({ min: 6 }),
     validate
-], authController.changePassword);
+], authController.requestPasswordReset);
 
 /**
  * @swagger
@@ -206,7 +206,7 @@ router.post('/2fa/disable', isActive, authController.disable2FA);
 router.post('/2fa/verify', [
     body('token').notEmpty(),
     validate
-], authController.verify2FA);
+], authController.enable2FA);
 
 /**
  * @swagger
@@ -215,7 +215,7 @@ router.post('/2fa/verify', [
  *     summary: Get all active sessions
  *     tags: [Authentication]
  */
-router.get('/sessions', isActive, authController.getSessions);
+// router.get('/sessions', isActive, authController.getSessions);
 
 /**
  * @swagger
@@ -224,7 +224,7 @@ router.get('/sessions', isActive, authController.getSessions);
  *     summary: Terminate specific session
  *     tags: [Authentication]
  */
-router.delete('/sessions/:sessionId', isActive, authController.terminateSession);
+// router.delete('/sessions/:sessionId', isActive, authController.terminateSession);
 
 /**
  * @swagger
@@ -233,6 +233,6 @@ router.delete('/sessions/:sessionId', isActive, authController.terminateSession)
  *     summary: Terminate all sessions except current
  *     tags: [Authentication]
  */
-router.delete('/sessions', isActive, authController.terminateAllSessions);
+// router.delete('/sessions', isActive, authController.terminateAllSessions);
 
 module.exports = router;
