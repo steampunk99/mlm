@@ -1,233 +1,233 @@
-const { Op } = require('sequelize');
-const Report = require('../models/report.model');
-const User = require('../models/user.model');
-const Package = require('../models/package.model');
-const Withdrawal = require('../models/withdrawal.model');
-const Commission = require('../models/commission.model');
-const { sequelize } = require('../config/database');
-const ApiError = require('../utils/ApiError');
+const { PrismaClient } = require('@prisma/client');
+const prisma = new PrismaClient();
+const analyticsService = require('../services/analytics.service');
+const notificationService = require('../services/notification.service');
 
 class ReportController {
-    // Generate Network Growth Report
-    async generateNetworkReport(req, res) {
-        const { startDate, endDate } = req.query;
-        const userId = req.user.id;
-
+    async getNetworkGrowth(req, res) {
         try {
-            const networkMetrics = await User.findAll({
-                where: {
-                    sponsorId: userId,
-                    createdAt: {
-                        [Op.between]: [startDate, endDate]
-                    }
-                },
-                attributes: [
-                    [sequelize.fn('DATE', sequelize.col('createdAt')), 'date'],
-                    [sequelize.fn('COUNT', sequelize.col('id')), 'newMembers'],
-                    [sequelize.fn('SUM', sequelize.col('activePackage')), 'packageValue']
-                ],
-                group: [sequelize.fn('DATE', sequelize.col('createdAt'))]
-            });
+            const userId = req.user.id;
+            const { startDate, endDate, interval = 'day' } = req.query;
 
-            const report = await Report.create({
+            const growth = await analyticsService.getNetworkGrowth({
                 userId,
-                reportType: 'NETWORK',
-                startDate,
-                endDate,
-                metrics: {
-                    dailyGrowth: networkMetrics,
-                    totalNewMembers: networkMetrics.reduce((sum, day) => sum + day.newMembers, 0),
-                    totalPackageValue: networkMetrics.reduce((sum, day) => sum + day.packageValue, 0)
-                },
-                status: 'GENERATED',
-                generatedAt: new Date()
+                startDate: startDate ? new Date(startDate) : null,
+                endDate: endDate ? new Date(endDate) : null,
+                interval
             });
 
-            res.json(report);
+            res.json({
+                success: true,
+                data: growth
+            });
         } catch (error) {
-            throw new ApiError(500, 'Error generating network report');
+            console.error('Get network growth error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to fetch network growth'
+            });
         }
     }
 
-    // Generate Earnings Report
-    async generateEarningsReport(req, res) {
-        const { startDate, endDate } = req.query;
-        const userId = req.user.id;
-
+    async getCommissionReport(req, res) {
         try {
-            const commissionMetrics = await Commission.findAll({
-                where: {
-                    userId,
-                    createdAt: {
-                        [Op.between]: [startDate, endDate]
-                    }
-                },
-                attributes: [
-                    'type',
-                    [sequelize.fn('SUM', sequelize.col('amount')), 'totalAmount'],
-                    [sequelize.fn('COUNT', sequelize.col('id')), 'count']
-                ],
-                group: ['type']
-            });
+            const userId = req.user.id;
+            const { startDate, endDate, type } = req.query;
 
-            const withdrawalMetrics = await Withdrawal.findAll({
-                where: {
-                    userId,
-                    status: 'COMPLETED',
-                    createdAt: {
-                        [Op.between]: [startDate, endDate]
-                    }
-                },
-                attributes: [
-                    'method',
-                    [sequelize.fn('SUM', sequelize.col('amount')), 'totalAmount'],
-                    [sequelize.fn('COUNT', sequelize.col('id')), 'count']
-                ],
-                group: ['method']
-            });
-
-            const report = await Report.create({
+            const report = await analyticsService.getCommissionReport({
                 userId,
-                reportType: 'EARNINGS',
-                startDate,
-                endDate,
-                metrics: {
-                    commissions: commissionMetrics,
-                    withdrawals: withdrawalMetrics,
-                    totalEarnings: commissionMetrics.reduce((sum, type) => sum + type.totalAmount, 0),
-                    totalWithdrawals: withdrawalMetrics.reduce((sum, method) => sum + method.totalAmount, 0)
-                },
-                status: 'GENERATED',
-                generatedAt: new Date()
+                startDate: startDate ? new Date(startDate) : null,
+                endDate: endDate ? new Date(endDate) : null,
+                type
             });
 
-            res.json(report);
+            res.json({
+                success: true,
+                data: report
+            });
         } catch (error) {
-            throw new ApiError(500, 'Error generating earnings report');
+            console.error('Get commission report error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to fetch commission report'
+            });
         }
     }
 
-    // Generate Package Performance Report
-    async generatePackageReport(req, res) {
-        const { startDate, endDate } = req.query;
-        const userId = req.user.id;
-
+    async getTeamPerformanceReport(req, res) {
         try {
-            const packageMetrics = await Package.findAll({
-                include: [{
-                    model: User,
-                    where: {
-                        sponsorId: userId
-                    },
-                    attributes: []
-                }],
-                attributes: [
-                    'name',
-                    'price',
-                    [sequelize.fn('COUNT', sequelize.col('Users.id')), 'totalUsers'],
-                    [sequelize.literal('price * COUNT(Users.id)'), 'totalValue']
-                ],
-                group: ['Package.id']
-            });
+            const userId = req.user.id;
+            const { startDate, endDate, metrics = ['sales', 'referrals', 'commissions'] } = req.query;
 
-            const report = await Report.create({
+            const performance = await analyticsService.getTeamPerformanceReport({
                 userId,
-                reportType: 'PACKAGE',
-                startDate,
-                endDate,
-                metrics: {
-                    packages: packageMetrics,
-                    totalPackages: packageMetrics.reduce((sum, pkg) => sum + pkg.totalUsers, 0),
-                    totalValue: packageMetrics.reduce((sum, pkg) => sum + pkg.totalValue, 0)
-                },
-                status: 'GENERATED',
-                generatedAt: new Date()
+                startDate: startDate ? new Date(startDate) : null,
+                endDate: endDate ? new Date(endDate) : null,
+                metrics: Array.isArray(metrics) ? metrics : [metrics]
             });
 
-            res.json(report);
+            res.json({
+                success: true,
+                data: performance
+            });
         } catch (error) {
-            throw new ApiError(500, 'Error generating package report');
+            console.error('Get team performance report error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to fetch team performance report'
+            });
         }
     }
 
-    // Get Report History
-    async getReportHistory(req, res) {
-        const { type, startDate, endDate } = req.query;
-        const userId = req.user.id;
-
+    async getRankAdvancementReport(req, res) {
         try {
-            const where = {
-                userId,
-                ...(type && { reportType: type }),
-                ...(startDate && endDate && {
-                    createdAt: {
-                        [Op.between]: [startDate, endDate]
-                    }
-                })
-            };
+            const userId = req.user.id;
+            const { startDate, endDate } = req.query;
 
-            const reports = await Report.findAll({
-                where,
-                order: [['createdAt', 'DESC']],
-                limit: 10
+            const report = await analyticsService.getRankAdvancementReport({
+                userId,
+                startDate: startDate ? new Date(startDate) : null,
+                endDate: endDate ? new Date(endDate) : null
             });
 
-            res.json(reports);
+            res.json({
+                success: true,
+                data: report
+            });
         } catch (error) {
-            throw new ApiError(500, 'Error fetching report history');
+            console.error('Get rank advancement report error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to fetch rank advancement report'
+            });
         }
     }
 
-    // Admin: Generate Global Statistics
-    async generateGlobalStats(req, res) {
+    async getPackageDistributionReport(req, res) {
         try {
-            const userStats = await User.findAll({
-                attributes: [
-                    [sequelize.fn('COUNT', sequelize.col('id')), 'totalUsers'],
-                    [sequelize.fn('SUM', sequelize.col('balance')), 'totalBalance'],
-                    [sequelize.fn('COUNT', sequelize.literal('CASE WHEN active = true THEN 1 END')), 'activeUsers']
-                ]
-            });
+            const userId = req.user.id;
 
-            const packageStats = await Package.findAll({
-                attributes: [
-                    'name',
-                    [sequelize.fn('COUNT', sequelize.col('Users.id')), 'userCount'],
-                    [sequelize.literal('price * COUNT(Users.id)'), 'totalValue']
-                ],
-                include: [{
-                    model: User,
-                    attributes: []
-                }],
-                group: ['Package.id']
-            });
+            const distribution = await analyticsService.getPackageDistributionReport(userId);
 
-            const withdrawalStats = await Withdrawal.findAll({
-                attributes: [
-                    'status',
-                    [sequelize.fn('COUNT', sequelize.col('id')), 'count'],
-                    [sequelize.fn('SUM', sequelize.col('amount')), 'totalAmount']
-                ],
-                group: ['status']
+            res.json({
+                success: true,
+                data: distribution
             });
-
-            const report = await Report.create({
-                userId: req.user.id,
-                reportType: 'GLOBAL',
-                startDate: new Date(),
-                endDate: new Date(),
-                metrics: {
-                    userStats,
-                    packageStats,
-                    withdrawalStats
-                },
-                status: 'GENERATED',
-                generatedAt: new Date()
-            });
-
-            res.json(report);
         } catch (error) {
-            throw new ApiError(500, 'Error generating global statistics');
+            console.error('Get package distribution report error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to fetch package distribution report'
+            });
+        }
+    }
+
+    async getActivityReport(req, res) {
+        try {
+            const userId = req.user.id;
+            const { startDate, endDate, type } = req.query;
+
+            const activity = await analyticsService.getActivityReport({
+                userId,
+                startDate: startDate ? new Date(startDate) : null,
+                endDate: endDate ? new Date(endDate) : null,
+                type
+            });
+
+            res.json({
+                success: true,
+                data: activity
+            });
+        } catch (error) {
+            console.error('Get activity report error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to fetch activity report'
+            });
+        }
+    }
+
+    async generateCustomReport(req, res) {
+        try {
+            const userId = req.user.id;
+            const { metrics, filters, groupBy, startDate, endDate } = req.body;
+
+            const report = await analyticsService.generateCustomReport({
+                userId,
+                metrics,
+                filters,
+                groupBy,
+                startDate: startDate ? new Date(startDate) : null,
+                endDate: endDate ? new Date(endDate) : null
+            });
+
+            // Schedule report generation notification
+            await notificationService.createNotification({
+                userId,
+                type: 'REPORT',
+                title: 'Custom Report Generated',
+                message: 'Your custom report has been generated successfully',
+                data: { reportId: report.id }
+            });
+
+            res.json({
+                success: true,
+                data: report
+            });
+        } catch (error) {
+            console.error('Generate custom report error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to generate custom report'
+            });
+        }
+    }
+
+    async exportReport(req, res) {
+        try {
+            const userId = req.user.id;
+            const { reportId, format = 'csv' } = req.query;
+
+            const exportData = await analyticsService.exportReport({
+                userId,
+                reportId,
+                format
+            });
+
+            res.setHeader('Content-Type', 'application/octet-stream');
+            res.setHeader('Content-Disposition', `attachment; filename=report.${format}`);
+            res.send(exportData);
+        } catch (error) {
+            console.error('Export report error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to export report'
+            });
+        }
+    }
+
+    async scheduleReport(req, res) {
+        try {
+            const userId = req.user.id;
+            const { reportConfig, schedule } = req.body;
+
+            const scheduledReport = await analyticsService.scheduleReport({
+                userId,
+                reportConfig,
+                schedule
+            });
+
+            res.json({
+                success: true,
+                data: scheduledReport,
+                message: 'Report scheduled successfully'
+            });
+        } catch (error) {
+            console.error('Schedule report error:', error);
+            res.status(500).json({
+                success: false,
+                error: 'Failed to schedule report'
+            });
         }
     }
 }
