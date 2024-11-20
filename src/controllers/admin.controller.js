@@ -1,4 +1,8 @@
-const { User, NodePackage, NodeWithdrawal, Package } = require('../models');
+const userService = require('../services/user.service');
+const nodeService = require('../services/node.service');
+const packageService = require('../services/package.service');
+const nodePackageService = require('../services/nodePackage.service');
+const nodeWithdrawalService = require('../services/nodeWithdrawal.service');
 const { validatePackage } = require('../middleware/validate');
 
 class AdminController {
@@ -14,39 +18,26 @@ class AdminController {
         limit = 10, 
         status, 
         search,
-        sort_by = 'id',
-        sort_order = 'DESC'
+        sortBy = 'createdAt',
+        sortOrder = 'desc'
       } = req.query;
 
-      const offset = (page - 1) * limit;
-      const whereClause = { is_deleted: false };
-
-      if (status) {
-        whereClause.status = status;
-      }
-
-      if (search) {
-        whereClause[Op.or] = [
-          { username: { [Op.like]: `%${search}%` } },
-          { email: { [Op.like]: `%${search}%` } },
-          { full_name: { [Op.like]: `%${search}%` } }
-        ];
-      }
-
-      const { count, rows } = await User.findAndCountAll({
-        where: whereClause,
+      const users = await userService.findAll({
+        page: parseInt(page),
         limit: parseInt(limit),
-        offset: parseInt(offset),
-        order: [[sort_by, sort_order]]
+        status,
+        search,
+        sortBy,
+        sortOrder
       });
 
       res.json({
         success: true,
         data: {
-          users: rows,
-          total: count,
-          pages: Math.ceil(count / limit),
-          current_page: parseInt(page)
+          users: users.data,
+          total: users.total,
+          pages: users.pages,
+          currentPage: users.currentPage
         }
       });
 
@@ -54,7 +45,43 @@ class AdminController {
       console.error('Get users error:', error);
       res.status(500).json({
         success: false,
-        message: 'Internal server error'
+        message: 'Error retrieving users'
+      });
+    }
+  }
+
+  /**
+   * Get user by ID with full details
+   * @param {Request} req 
+   * @param {Response} res 
+   */
+  async getUserDetails(req, res) {
+    try {
+      const { id } = req.params;
+
+      const user = await userService.findById(id, {
+        includeNode: true,
+        includePackages: true,
+        includeWithdrawals: true
+      });
+
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+
+      res.json({
+        success: true,
+        data: user
+      });
+
+    } catch (error) {
+      console.error('Get user details error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error retrieving user details'
       });
     }
   }
@@ -69,7 +96,7 @@ class AdminController {
       const { id } = req.params;
       const { status } = req.body;
 
-      const user = await User.findByPk(id);
+      const user = await userService.findById(id);
       if (!user) {
         return res.status(404).json({
           success: false,
@@ -77,19 +104,104 @@ class AdminController {
         });
       }
 
-      await user.update({ status });
+      await userService.updateStatus(id, status);
 
       res.json({
         success: true,
-        message: 'User status updated successfully',
-        data: user
+        message: 'User status updated successfully'
       });
 
     } catch (error) {
       console.error('Update user status error:', error);
       res.status(500).json({
         success: false,
-        message: 'Internal server error'
+        message: 'Error updating user status'
+      });
+    }
+  }
+
+  /**
+   * Delete user (soft delete)
+   * @param {Request} req 
+   * @param {Response} res 
+   */
+  async deleteUser(req, res) {
+    try {
+      const { id } = req.params;
+
+      const user = await userService.findById(id);
+      if (!user) {
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+
+      await userService.softDelete(id);
+
+      res.json({
+        success: true,
+        message: 'User deleted successfully'
+      });
+
+    } catch (error) {
+      console.error('Delete user error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error deleting user'
+      });
+    }
+  }
+
+  /**
+   * Get system statistics
+   * @param {Request} req 
+   * @param {Response} res 
+   */
+  async getSystemStats(req, res) {
+    try {
+      const [
+        totalUsers,
+        activeUsers,
+        totalNodes,
+        activeNodes,
+        totalPackages,
+        activePackages,
+        pendingWithdrawals
+      ] = await Promise.all([
+        userService.count(),
+        userService.count({ status: 'ACTIVE' }),
+        nodeService.count(),
+        nodeService.count({ status: 'ACTIVE' }),
+        packageService.count(),
+        packageService.count({ status: 'ACTIVE' }),
+        nodeWithdrawalService.count({ status: 'PENDING' })
+      ]);
+
+      res.json({
+        success: true,
+        data: {
+          users: {
+            total: totalUsers,
+            active: activeUsers
+          },
+          nodes: {
+            total: totalNodes,
+            active: activeNodes
+          },
+          packages: {
+            total: totalPackages,
+            active: activePackages
+          },
+          pendingWithdrawals
+        }
+      });
+
+    } catch (error) {
+      console.error('Get system stats error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error retrieving system statistics'
       });
     }
   }
@@ -109,7 +221,7 @@ class AdminController {
         });
       }
 
-      const pkg = await Package.create(req.body);
+      const pkg = await packageService.create(req.body);
 
       res.status(201).json({
         success: true,
@@ -142,7 +254,7 @@ class AdminController {
         });
       }
 
-      const pkg = await Package.findByPk(id);
+      const pkg = await packageService.findById(id);
       if (!pkg) {
         return res.status(404).json({
           success: false,
@@ -150,7 +262,7 @@ class AdminController {
         });
       }
 
-      await pkg.update(req.body);
+      await packageService.update(id, req.body);
 
       res.json({
         success: true,
@@ -176,7 +288,7 @@ class AdminController {
     try {
       const { id } = req.params;
 
-      const pkg = await Package.findByPk(id);
+      const pkg = await packageService.findById(id);
       if (!pkg) {
         return res.status(404).json({
           success: false,
@@ -184,7 +296,7 @@ class AdminController {
         });
       }
 
-      await pkg.update({ is_deleted: true });
+      await packageService.delete(id);
 
       res.json({
         success: true,
@@ -210,7 +322,7 @@ class AdminController {
       const { id } = req.params;
       const { status, reason } = req.body;
 
-      const withdrawal = await NodeWithdrawal.findByPk(id);
+      const withdrawal = await nodeWithdrawalService.findById(id);
       if (!withdrawal) {
         return res.status(404).json({
           success: false,
@@ -225,27 +337,14 @@ class AdminController {
         });
       }
 
-      await withdrawal.update({
+      await nodeWithdrawalService.update(id, {
         status,
         reason: reason || null
       });
 
       // If rejected, create a reversal statement
       if (status === 'rejected') {
-        await NodeStatement.create({
-          node_id: withdrawal.node_id,
-          node_position: withdrawal.node_position,
-          node_username: withdrawal.node_username,
-          amount: withdrawal.amount,
-          is_credit: true,
-          is_debit: false,
-          reason: 'Withdrawal request rejected - Amount reversed',
-          table_name: 'node_withdrawal',
-          table_id: withdrawal.id,
-          event_date: new Date(),
-          event_timestamp: new Date(),
-          is_effective: true
-        });
+        await nodePackageService.createReversalStatement(withdrawal);
       }
 
       res.json({
@@ -256,57 +355,6 @@ class AdminController {
 
     } catch (error) {
       console.error('Process withdrawal error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Internal server error'
-      });
-    }
-  }
-
-  /**
-   * Get system statistics
-   * @param {Request} req 
-   * @param {Response} res 
-   */
-  async getStatistics(req, res) {
-    try {
-      const totalUsers = await User.count({
-        where: { is_deleted: false }
-      });
-
-      const activeUsers = await User.count({
-        where: { 
-          status: 'active',
-          is_deleted: false
-        }
-      });
-
-      const totalPackages = await NodePackage.count({
-        where: { 
-          is_paid: true,
-          is_deleted: false
-        }
-      });
-
-      const pendingWithdrawals = await NodeWithdrawal.count({
-        where: {
-          status: 'pending',
-          is_deleted: false
-        }
-      });
-
-      res.json({
-        success: true,
-        data: {
-          total_users: totalUsers,
-          active_users: activeUsers,
-          total_packages: totalPackages,
-          pending_withdrawals: pendingWithdrawals
-        }
-      });
-
-    } catch (error) {
-      console.error('Get statistics error:', error);
       res.status(500).json({
         success: false,
         message: 'Internal server error'

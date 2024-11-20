@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const { User, Node } = require('../models');
+const userService = require('../services/user.service');
+const nodeService = require('../services/node.service');
 const { validateRegistration, validateLogin } = require('../middleware/validate');
 const { generateUsername } = require('../utils/userUtils');
 
@@ -34,7 +35,7 @@ class AuthController {
       } = req.body;
 
       // Check if email already exists
-      const existingUser = await User.findOne({ where: { email } });
+      const existingUser = await userService.findByEmail(email);
       if (existingUser) {
         return res.status(400).json({
           success: false,
@@ -43,13 +44,7 @@ class AuthController {
       }
 
       // Validate sponsor
-      const sponsorNode = await Node.findOne({ 
-        include: [{
-          model: User,
-          as: 'user',
-          where: { username: sponsorUsername }
-        }]
-      });
+      const sponsorNode = await nodeService.findByUsername(sponsorUsername);
       if (!sponsorNode) {
         return res.status(400).json({
           success: false,
@@ -58,13 +53,7 @@ class AuthController {
       }
 
       // Validate placement
-      const placementNode = await Node.findOne({
-        include: [{
-          model: User,
-          as: 'user',
-          where: { username: placementUsername }
-        }]
-      });
+      const placementNode = await nodeService.findByUsername(placementUsername);
       if (!placementNode) {
         return res.status(400).json({
           success: false,
@@ -75,33 +64,35 @@ class AuthController {
       // Generate unique username
       const username = await generateUsername(email);
 
-      // Create user first
-      const user = await User.create({
-        username,
-        email,
-        password,
-        firstName,
-        lastName,
-        phone,
-        country,
-        role: 'USER',
-        active: true
-      });
-
-      // Create MLM node
-      const node = await Node.create({
-        userId: user.id,
-        position,
-        level: placementNode.level + 1,
-        parentNodeId: placementNode.id,
-        sponsorNodeId: sponsorNode.id,
-        status: 'pending',
-        isSpillover: false,
+      // Create user with node in a transaction
+      const { user, node } = await userService.createUserWithNode({
+        user: {
+          username,
+          email,
+          password,
+          firstName,
+          lastName,
+          phone,
+          country,
+          role: 'USER',
+          status: 'ACTIVE'
+        },
+        node: {
+          position,
+          level: placementNode.level + 1,
+          placementId: placementNode.id,
+          sponsorId: sponsorNode.id,
+          status: 'PENDING'
+        }
       });
 
       // Generate JWT token
       const token = jwt.sign(
-        { userId: user.id, username: user.username },
+        { 
+          id: user.id,
+          username: user.username,
+          role: user.role
+        },
         process.env.JWT_SECRET,
         { expiresIn: '24h' }
       );
@@ -110,20 +101,21 @@ class AuthController {
         success: true,
         message: 'Registration successful',
         data: {
-          token,
           user: {
             id: user.id,
             username: user.username,
             email: user.email,
             firstName: user.firstName,
-            lastName: user.lastName
+            lastName: user.lastName,
+            role: user.role
           },
           node: {
             id: node.id,
-            position,
+            position: node.position,
             level: node.level,
             status: node.status
-          }
+          },
+          token
         }
       });
 
@@ -131,8 +123,7 @@ class AuthController {
       console.error('Registration error:', error);
       res.status(500).json({
         success: false,
-        message: 'Registration failed',
-        error: error.message
+        message: 'Error during registration'
       });
     }
   }
@@ -144,44 +135,50 @@ class AuthController {
    */
   async login(req, res) {
     try {
+      // Validate request body
       const { error } = validateLogin(req.body);
       if (error) {
-        return res.status(400).json({
-          success: false,
-          message: error.details[0].message
+        return res.status(400).json({ 
+          success: false, 
+          message: error.details[0].message 
         });
       }
 
       const { email, password } = req.body;
 
-      // Find user
-      const user = await User.findOne({ 
-        where: { email },
-        include: [{
-          model: Node,
-          as: 'node'
-        }]
-      });
-
+      // Find user by email
+      const user = await userService.findByEmail(email);
       if (!user) {
-        return res.status(400).json({
+        return res.status(401).json({
           success: false,
-          message: 'Invalid credentials'
+          message: 'Invalid email or password'
         });
       }
 
-      // Check password
-      const isValidPassword = await user.checkPassword(password);
-      if (!isValidPassword) {
-        return res.status(400).json({
+      // Verify password
+      const validPassword = await bcrypt.compare(password, user.password);
+      if (!validPassword) {
+        return res.status(401).json({
           success: false,
-          message: 'Invalid credentials'
+          message: 'Invalid email or password'
         });
       }
 
-      // Generate token
+      // Check if user is active
+      if (user.status !== 'ACTIVE') {
+        return res.status(403).json({
+          success: false,
+          message: 'Account is not active'
+        });
+      }
+
+      // Generate JWT token
       const token = jwt.sign(
-        { userId: user.id, username: user.username },
+        { 
+          id: user.id,
+          username: user.username,
+          role: user.role
+        },
         process.env.JWT_SECRET,
         { expiresIn: '24h' }
       );
@@ -190,7 +187,6 @@ class AuthController {
         success: true,
         message: 'Login successful',
         data: {
-          token,
           user: {
             id: user.id,
             username: user.username,
@@ -199,15 +195,7 @@ class AuthController {
             lastName: user.lastName,
             role: user.role
           },
-          node: user.node ? {
-            id: user.node.id,
-            position: user.node.position,
-            level: user.node.level,
-            status: user.node.status,
-            balance: user.node.balance,
-            earnings: user.node.earnings,
-            totalReferrals: user.node.totalReferrals
-          } : null
+          token
         }
       });
 
@@ -215,8 +203,7 @@ class AuthController {
       console.error('Login error:', error);
       res.status(500).json({
         success: false,
-        message: 'Login failed',
-        error: error.message
+        message: 'Error during login'
       });
     }
   }
@@ -230,7 +217,7 @@ class AuthController {
     try {
       const { email } = req.body;
 
-      const user = await User.findOne({ where: { email } });
+      const user = await userService.findByEmail(email);
       if (!user) {
         return res.status(404).json({
           success: false,
@@ -239,30 +226,21 @@ class AuthController {
       }
 
       // Generate reset token
-      const resetToken = jwt.sign(
-        { id: user.id },
-        process.env.JWT_RESET_SECRET,
-        { expiresIn: '1h' }
-      );
+      const resetToken = await userService.generatePasswordResetToken(user.id);
 
-      // Save reset token and expiry
-      await user.update({
-        resetToken: resetToken,
-        resetTokenExpires: new Date(Date.now() + 3600000) // 1 hour
-      });
-
-      // TODO: Send reset email with token
-
+      // TODO: Send reset token via email
+      // For now, just return it in response
       res.json({
         success: true,
-        message: 'Password reset instructions sent to email'
+        message: 'Password reset token generated',
+        data: { resetToken }
       });
 
     } catch (error) {
       console.error('Password reset request error:', error);
       res.status(500).json({
         success: false,
-        message: 'Internal server error'
+        message: 'Error processing password reset request'
       });
     }
   }
@@ -274,37 +252,17 @@ class AuthController {
    */
   async resetPassword(req, res) {
     try {
-      const { token, password } = req.body;
+      const { token, newPassword } = req.body;
 
-      // Verify token
-      const decoded = jwt.verify(token, process.env.JWT_RESET_SECRET);
-
-      // Find user
-      const user = await User.findOne({
-        where: {
-          id: decoded.id,
-          resetToken: token,
-          resetTokenExpires: { [Op.gt]: new Date() }
-        }
-      });
-
-      if (!user) {
+      const userId = await userService.verifyPasswordResetToken(token);
+      if (!userId) {
         return res.status(400).json({
           success: false,
           message: 'Invalid or expired reset token'
         });
       }
 
-      // Hash new password
-      const salt = await bcrypt.genSalt(10);
-      const hashedPassword = await bcrypt.hash(password, salt);
-
-      // Update password and clear reset token
-      await user.update({
-        password: hashedPassword,
-        resetToken: null,
-        resetTokenExpires: null
-      });
+      await userService.updatePassword(userId, newPassword);
 
       res.json({
         success: true,
@@ -315,7 +273,7 @@ class AuthController {
       console.error('Password reset error:', error);
       res.status(500).json({
         success: false,
-        message: 'Internal server error'
+        message: 'Error resetting password'
       });
     }
   }
