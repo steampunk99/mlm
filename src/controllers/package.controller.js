@@ -1,4 +1,8 @@
-const { Package, NodePackage, User, Transaction } = require('../models');
+const packageService = require('../services/package.service');
+const nodePackageService = require('../services/nodePackage.service');
+const userService = require('../services/user.service');
+const nodeService = require('../services/node.service');
+const commissionService = require('../services/commission.service');
 const { validatePackagePurchase, validatePackageCreate } = require('../middleware/validate');
 const { calculateCommissions } = require('../utils/commission.utils');
 
@@ -10,9 +14,7 @@ class PackageController {
    */
   async getAllPackages(req, res) {
     try {
-      const packages = await Package.findAll({
-        where: { is_deleted: false }
-      });
+      const packages = await packageService.findAll();
 
       res.json({
         success: true,
@@ -23,7 +25,7 @@ class PackageController {
       console.error('Get packages error:', error);
       res.status(500).json({
         success: false,
-        message: 'Internal server error'
+        message: 'Error retrieving packages'
       });
     }
   }
@@ -36,17 +38,16 @@ class PackageController {
   async getUserPackages(req, res) {
     try {
       const userId = req.user.id;
+      const node = await nodeService.findByUserId(userId);
+      
+      if (!node) {
+        return res.status(404).json({
+          success: false,
+          message: 'Node not found for user'
+        });
+      }
 
-      const packages = await NodePackage.findAll({
-        where: {
-          node_id: userId,
-          is_deleted: false
-        },
-        include: [{
-          model: Package,
-          attributes: ['name', 'description', 'benefits']
-        }]
-      });
+      const packages = await nodePackageService.findByNodeId(node.id);
 
       res.json({
         success: true,
@@ -57,7 +58,7 @@ class PackageController {
       console.error('Get user packages error:', error);
       res.status(500).json({
         success: false,
-        message: 'Internal server error'
+        message: 'Error retrieving user packages'
       });
     }
   }
@@ -78,17 +79,11 @@ class PackageController {
         });
       }
 
-      const { package_id, payment_method, phone_number } = req.body;
+      const { packageId, paymentMethod, phoneNumber } = req.body;
       const userId = req.user.id;
 
       // Get package details
-      const pkg = await Package.findOne({
-        where: {
-          id: package_id,
-          is_deleted: false
-        }
-      });
-
+      const pkg = await packageService.findById(packageId);
       if (!pkg) {
         return res.status(404).json({
           success: false,
@@ -96,59 +91,57 @@ class PackageController {
         });
       }
 
-      // Get user details
-      const user = await User.findByPk(userId);
-      if (!user) {
+      // Get node details
+      const node = await nodeService.findByUserId(userId);
+      if (!node) {
         return res.status(404).json({
           success: false,
-          message: 'User not found'
+          message: 'Node not found for user'
         });
       }
 
-      // Check if user already has this package
-      const existingPackage = await NodePackage.findOne({
-        where: {
-          node_id: userId,
-          package_id,
-          is_deleted: false
-        }
-      });
-
-      if (existingPackage) {
+      // Check if node already has this package
+      const existingPackage = await nodePackageService.findActivePackagesByNodeId(node.id);
+      if (existingPackage.some(p => p.packageId === packageId)) {
         return res.status(400).json({
           success: false,
           message: 'You already have this package'
         });
       }
 
-      // Create package purchase record
-      const nodePurchase = await NodePackage.create({
-        node_id: userId,
-        node_position: user.position,
-        node_username: user.username,
-        package_id,
-        package_name: pkg.name,
-        price: pkg.price,
-        is_paid: false,
-        payment_type: payment_method,
-        payment_phone_number: phone_number
+      // Create package purchase in a transaction
+      const nodePurchase = await nodePackageService.create({
+        nodeId: node.id,
+        packageId,
+        status: 'PENDING',
+        paymentMethod,
+        paymentPhone: phoneNumber
       });
 
-      // TODO: Integrate with payment gateway
-      // For now, we'll just mark it as paid
-      await nodePurchase.update({ is_paid: true });
+      // Calculate and create commissions
+      const commissions = await calculateCommissions(node.id, pkg.price);
+      await Promise.all(commissions.map(commission => 
+        commissionService.create({
+          ...commission,
+          packageId,
+          status: 'PENDING'
+        })
+      ));
 
       res.status(201).json({
         success: true,
-        message: 'Package purchased successfully',
-        data: nodePurchase
+        message: 'Package purchase initiated',
+        data: {
+          purchase: nodePurchase,
+          package: pkg
+        }
       });
 
     } catch (error) {
       console.error('Purchase package error:', error);
       res.status(500).json({
         success: false,
-        message: 'Internal server error'
+        message: 'Error processing package purchase'
       });
     }
   }
@@ -160,7 +153,6 @@ class PackageController {
    */
   async createPackage(req, res) {
     try {
-      // Validate request
       const { error } = validatePackageCreate(req.body);
       if (error) {
         return res.status(400).json({
@@ -169,40 +161,19 @@ class PackageController {
         });
       }
 
-      const {
-        name,
-        price,
-        description,
-        benefits,
-        level,
-        max_daily_earnings,
-        binary_bonus_percentage,
-        referral_bonus_percentage
-      } = req.body;
-
-      // Create new package
-      const newPackage = await Package.create({
-        name,
-        price,
-        description,
-        benefits,
-        level,
-        max_daily_earnings,
-        binary_bonus_percentage,
-        referral_bonus_percentage
-      });
+      const pkg = await packageService.create(req.body);
 
       res.status(201).json({
         success: true,
         message: 'Package created successfully',
-        data: newPackage
+        data: pkg
       });
 
     } catch (error) {
       console.error('Create package error:', error);
       res.status(500).json({
         success: false,
-        message: 'Internal server error'
+        message: 'Error creating package'
       });
     }
   }
@@ -215,13 +186,8 @@ class PackageController {
   async updatePackage(req, res) {
     try {
       const { id } = req.params;
-      const updateData = req.body;
 
-      // Find package
-      const pkg = await Package.findOne({
-        where: { id, is_deleted: false }
-      });
-
+      const pkg = await packageService.findById(id);
       if (!pkg) {
         return res.status(404).json({
           success: false,
@@ -229,20 +195,19 @@ class PackageController {
         });
       }
 
-      // Update package
-      await pkg.update(updateData);
+      const updatedPkg = await packageService.update(id, req.body);
 
       res.json({
         success: true,
         message: 'Package updated successfully',
-        data: pkg
+        data: updatedPkg
       });
 
     } catch (error) {
       console.error('Update package error:', error);
       res.status(500).json({
         success: false,
-        message: 'Internal server error'
+        message: 'Error updating package'
       });
     }
   }
@@ -256,11 +221,7 @@ class PackageController {
     try {
       const { id } = req.params;
 
-      // Find package
-      const pkg = await Package.findOne({
-        where: { id, is_deleted: false }
-      });
-
+      const pkg = await packageService.findById(id);
       if (!pkg) {
         return res.status(404).json({
           success: false,
@@ -268,8 +229,7 @@ class PackageController {
         });
       }
 
-      // Soft delete package
-      await pkg.update({ is_deleted: true });
+      await packageService.delete(id);
 
       res.json({
         success: true,
@@ -280,7 +240,7 @@ class PackageController {
       console.error('Delete package error:', error);
       res.status(500).json({
         success: false,
-        message: 'Internal server error'
+        message: 'Error deleting package'
       });
     }
   }
@@ -292,19 +252,21 @@ class PackageController {
    */
   async upgradePackage(req, res) {
     try {
-      const { current_package_id, new_package_id, payment_method, phone_number } = req.body;
+      const { currentPackageId, newPackageId, paymentMethod, phoneNumber } = req.body;
       const userId = req.user.id;
 
-      // Get current package
-      const currentPackage = await NodePackage.findOne({
-        where: {
-          node_id: userId,
-          package_id: current_package_id,
-          is_deleted: false
-        }
-      });
+      // Get node details
+      const node = await nodeService.findByUserId(userId);
+      if (!node) {
+        return res.status(404).json({
+          success: false,
+          message: 'Node not found for user'
+        });
+      }
 
-      if (!currentPackage) {
+      // Validate current package
+      const currentPackage = await nodePackageService.findById(currentPackageId);
+      if (!currentPackage || currentPackage.nodeId !== node.id) {
         return res.status(404).json({
           success: false,
           message: 'Current package not found'
@@ -312,13 +274,7 @@ class PackageController {
       }
 
       // Get new package details
-      const newPackage = await Package.findOne({
-        where: {
-          id: new_package_id,
-          is_deleted: false
-        }
-      });
-
+      const newPackage = await packageService.findById(newPackageId);
       if (!newPackage) {
         return res.status(404).json({
           success: false,
@@ -326,59 +282,43 @@ class PackageController {
         });
       }
 
-      // Calculate upgrade price
-      const upgradeCost = newPackage.price - currentPackage.price;
-      if (upgradeCost <= 0) {
+      // Validate upgrade (ensure new package is higher level)
+      if (newPackage.level <= currentPackage.package.level) {
         return res.status(400).json({
           success: false,
-          message: 'Cannot upgrade to a package with same or lower price'
+          message: 'New package must be of a higher level'
         });
       }
 
-      // Create upgrade transaction
-      const transaction = await Transaction.create({
-        node_id: userId,
-        type: 'package_upgrade',
-        amount: upgradeCost,
-        status: 'pending',
-        payment_method,
-        phone_number,
-        metadata: {
-          old_package_id: current_package_id,
-          new_package_id: new_package_id,
-          old_package_name: currentPackage.package_name,
-          new_package_name: newPackage.name
-        }
+      // Create upgrade record
+      const upgrade = await nodePackageService.create({
+        nodeId: node.id,
+        packageId: newPackageId,
+        status: 'PENDING',
+        paymentMethod,
+        paymentPhone: phoneNumber,
+        isUpgrade: true,
+        previousPackageId: currentPackageId
       });
 
-      // Update user's package after payment confirmation
-      await currentPackage.update({
-        is_deleted: true,
-        end_date: new Date()
-      });
-
-      const newUserPackage = await NodePackage.create({
-        node_id: userId,
-        node_position: currentPackage.node_position,
-        node_username: currentPackage.node_username,
-        package_id: new_package_id,
-        package_name: newPackage.name,
-        price: newPackage.price,
-        is_paid: true,
-        payment_type: payment_method,
-        payment_phone_number: phone_number,
-        upgraded_from: current_package_id
-      });
-
-      // Calculate and distribute upgrade commissions
-      await calculateCommissions(userId, upgradeCost, 'upgrade');
+      // Calculate upgrade commissions (difference in package prices)
+      const priceDifference = newPackage.price - currentPackage.package.price;
+      const commissions = await calculateCommissions(node.id, priceDifference);
+      await Promise.all(commissions.map(commission => 
+        commissionService.create({
+          ...commission,
+          packageId: newPackageId,
+          status: 'PENDING',
+          type: 'UPGRADE'
+        })
+      ));
 
       res.json({
         success: true,
-        message: 'Package upgraded successfully',
+        message: 'Package upgrade initiated',
         data: {
-          transaction,
-          new_package: newUserPackage
+          upgrade,
+          newPackage
         }
       });
 
@@ -386,7 +326,7 @@ class PackageController {
       console.error('Upgrade package error:', error);
       res.status(500).json({
         success: false,
-        message: 'Internal server error'
+        message: 'Error processing package upgrade'
       });
     }
   }
@@ -399,13 +339,18 @@ class PackageController {
   async getUpgradeHistory(req, res) {
     try {
       const userId = req.user.id;
+      const node = await nodeService.findByUserId(userId);
+      
+      if (!node) {
+        return res.status(404).json({
+          success: false,
+          message: 'Node not found for user'
+        });
+      }
 
-      const upgrades = await NodePackage.findAll({
-        where: {
-          node_id: userId,
-          upgraded_from: { [Op.ne]: null }
-        },
-        order: [['created_at', 'DESC']]
+      const upgrades = await nodePackageService.findByNodeId(node.id, {
+        isUpgrade: true,
+        includePackages: true
       });
 
       res.json({
@@ -417,7 +362,7 @@ class PackageController {
       console.error('Get upgrade history error:', error);
       res.status(500).json({
         success: false,
-        message: 'Internal server error'
+        message: 'Error retrieving upgrade history'
       });
     }
   }
