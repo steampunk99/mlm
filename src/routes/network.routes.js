@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const { auth } = require('../middleware/auth');
+const { isActive } = require('../middleware/auth');
+const { query, param } = require('express-validator');
+const { validate } = require('../middleware/validate');
 const networkController = require('../controllers/network.controller');
 
 /**
@@ -9,216 +11,145 @@ const networkController = require('../controllers/network.controller');
  *   schemas:
  *     NetworkNode:
  *       type: object
- *       required:
- *         - user_id
- *         - sponsor_id
- *         - placement_id
- *         - position
- *         - level
  *       properties:
  *         id:
- *           type: integer
- *           description: Node ID
- *         user_id:
- *           type: integer
- *           description: User ID associated with this node
- *         sponsor_id:
- *           type: integer
- *           description: ID of the sponsor node
- *         placement_id:
- *           type: integer
- *           description: ID of the placement node (upline)
+ *           type: string
+ *         userId:
+ *           type: string
+ *         sponsorId:
+ *           type: string
+ *         placementId:
+ *           type: string
  *         position:
  *           type: integer
  *           enum: [1, 2]
- *           description: Position in binary tree (1 for left, 2 for right)
  *         level:
  *           type: integer
- *           description: Level in the network hierarchy
- *         created_at:
+ *         createdAt:
  *           type: string
  *           format: date-time
- *         updated_at:
+ *         updatedAt:
  *           type: string
  *           format: date-time
- *     NetworkStats:
- *       type: object
- *       properties:
- *         total_downline:
- *           type: integer
- *         direct_referrals:
- *           type: integer
- *         left_team:
- *           type: integer
- *         right_team:
- *           type: integer
- *         left_business:
- *           type: number
- *           format: float
- *         right_business:
- *           type: number
- *           format: float
+ *         user:
+ *           $ref: '#/components/schemas/User'
  */
-
-/**
- * @swagger
- * /network/genealogy:
- *   get:
- *     summary: Get user's network genealogy
- *     description: Retrieves the binary tree structure showing user's downline
- *     tags: [Network]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: user_id
- *         schema:
- *           type: integer
- *         description: ID of the user to get genealogy for (defaults to authenticated user)
- *       - in: query
- *         name: depth
- *         schema:
- *           type: integer
- *           minimum: 1
- *           maximum: 10
- *           default: 3
- *         description: Number of levels to retrieve
- *     responses:
- *       200:
- *         description: Network genealogy retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     node:
- *                       $ref: '#/components/schemas/NetworkNode'
- *                     children:
- *                       type: array
- *                       items:
- *                         $ref: '#/components/schemas/NetworkNode'
- *       401:
- *         $ref: '#/components/responses/UnauthorizedError'
- */
-router.get('/genealogy', auth, networkController.getGenealogy);
-
-/**
- * @swagger
- * /network/stats:
- *   get:
- *     summary: Get user's network statistics
- *     description: Retrieves network statistics including team sizes and business volumes
- *     tags: [Network]
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Network statistics retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   $ref: '#/components/schemas/NetworkStats'
- *       401:
- *         $ref: '#/components/responses/UnauthorizedError'
- */
-router.get('/stats', auth, networkController.getStats);
 
 /**
  * @swagger
  * /network/referrals:
  *   get:
- *     summary: Get user's direct referrals
- *     description: Retrieves list of users directly referred by the authenticated user
+ *     summary: Get direct referrals
  *     tags: [Network]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - $ref: '#/components/parameters/PageParam'
- *       - $ref: '#/components/parameters/LimitParam'
- *     responses:
- *       200:
- *         description: Direct referrals retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: array
- *                   items:
- *                     $ref: '#/components/schemas/NetworkNode'
- *                 pagination:
- *                   $ref: '#/components/schemas/Pagination'
- *       401:
- *         $ref: '#/components/responses/UnauthorizedError'
  */
-router.get('/referrals', auth, networkController.getReferrals);
+router.get('/referrals', isActive, networkController.getDirectReferrals);
 
 /**
  * @swagger
- * /network/placement-options:
+ * /network/children:
  *   get:
- *     summary: Get available placement positions
- *     description: Retrieves available positions for placing a new member in the binary tree
+ *     summary: Get direct children in binary tree
  *     tags: [Network]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: placement_username
- *         required: true
- *         schema:
- *           type: string
- *         description: Username of the potential placement sponsor
- *     responses:
- *       200:
- *         description: Available positions retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     left_available:
- *                       type: boolean
- *                     right_available:
- *                       type: boolean
- *       401:
- *         $ref: '#/components/responses/UnauthorizedError'
- *       404:
- *         $ref: '#/components/responses/NotFoundError'
  */
-router.get('/placement-options', auth, networkController.getPlacementOptions);
+router.get('/children', isActive, networkController.getDirectChildren);
 
-// Get direct referrals (sponsored users)
-router.get('/referrals', auth, networkController.getDirectReferrals);
+/**
+ * @swagger
+ * /network/binary-tree:
+ *   get:
+ *     summary: Get binary tree structure
+ *     tags: [Network]
+ */
+router.get('/binary-tree', [
+    isActive,
+    query('maxLevel').optional().isInt({ min: 1, max: 10 }).default(3),
+    validate
+], networkController.getBinaryTree);
 
-// Get direct children in binary tree (left and right nodes)
-router.get('/children', auth, networkController.getDirectChildren);
+/**
+ * @swagger
+ * /network/genealogy:
+ *   get:
+ *     summary: Get genealogy tree
+ *     tags: [Network]
+ */
+router.get('/genealogy', [
+    isActive,
+    query('depth').optional().isInt({ min: 1, max: 10 }).default(3),
+    validate
+], networkController.getGenealogyTree);
 
-// Get complete binary tree structure
-router.get('/binary-tree', auth, networkController.getBinaryTree);
+/**
+ * @swagger
+ * /network/stats:
+ *   get:
+ *     summary: Get network statistics
+ *     tags: [Network]
+ */
+router.get('/stats', isActive, networkController.getNetworkStats);
 
-// Get upline/genealogy
-router.get('/genealogy', auth, networkController.getGenealogy);
+/**
+ * @swagger
+ * /network/team-performance:
+ *   get:
+ *     summary: Get team performance metrics
+ *     tags: [Network]
+ */
+router.get('/team-performance', [
+    isActive,
+    query('startDate').optional().isISO8601(),
+    query('endDate').optional().isISO8601(),
+    validate
+], networkController.getTeamPerformance);
 
-// Get network statistics
-router.get('/stats', auth, networkController.getNetworkStats);
+/**
+ * @swagger
+ * /network/business-volume:
+ *   get:
+ *     summary: Get business volume statistics
+ *     tags: [Network]
+ */
+router.get('/business-volume', [
+    isActive,
+    query('startDate').optional().isISO8601(),
+    query('endDate').optional().isISO8601(),
+    validate
+], networkController.getBusinessVolume);
+
+/**
+ * @swagger
+ * /network/rank-qualification:
+ *   get:
+ *     summary: Get rank qualification status
+ *     tags: [Network]
+ */
+router.get('/rank-qualification', isActive, networkController.getRankQualification);
+
+/**
+ * @swagger
+ * /network/team-structure:
+ *   get:
+ *     summary: Get team structure view
+ *     tags: [Network]
+ */
+router.get('/team-structure', [
+    isActive,
+    query('view').optional().isIn(['binary', 'unilevel', 'matrix']).default('binary'),
+    validate
+], networkController.getTeamStructure);
+
+/**
+ * @swagger
+ * /network/search:
+ *   get:
+ *     summary: Search network members
+ *     tags: [Network]
+ */
+router.get('/search', [
+    isActive,
+    query('query').notEmpty(),
+    query('type').optional().isIn(['username', 'name', 'email']).default('username'),
+    validate
+], networkController.searchNetwork);
 
 module.exports = router;
